@@ -187,6 +187,11 @@ class DesktopUI:
         ttk.Button(actions, text='비우기', command=lambda: self._clear_text(self.url_text)).pack(side='left', padx=8)
         self.mode_banner = ttk.Label(actions, text='링크 없음', style='Muted.TLabel')
         self.mode_banner.pack(side='right')
+        ttk.Label(
+            link,
+            text='⌘V가 안 되면 한/영 키를 눌러 영문으로 바꾼 뒤 다시 시도해보세요.\n또는 위의 "클립보드에서 붙여넣기" 버튼을 사용하세요.',
+            style='Muted.TLabel', justify='left',
+        ).pack(anchor='w', pady=(6, 0))
         self._enable_text_editing_shortcuts(self.url_text)
         self.url_text.bind('<<Modified>>', self._links_modified)
 

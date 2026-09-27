@@ -400,6 +400,26 @@ class DownloaderApp(DesktopUI, tk.Tk):
 
         widget.bind("<<Paste>>", paste)
 
+        # 한글(2벌식) 등 비영문 입력 소스가 활성화된 상태에서는 macOS가 Command+글자
+        # 키의 keysym을 영문 그대로 넘겨주지 않아서 위의 <Command-v> 류 바인딩이
+        # 매칭되지 않는다(그래서 영문 입력일 땐 되다가 한글 입력일 땐 안 됨).
+        # keycode(물리적 키 위치, 입력 소스와 무관)로 한 번 더 잡아서 그 경우를 보완한다.
+        _MAC_KEYCODES = {9: "v", 8: "c", 7: "x", 0: "a"}
+
+        def on_command_key(event):
+            letter = _MAC_KEYCODES.get(event.keycode)
+            if letter == "v":
+                return paste(event)
+            if letter == "c":
+                return copy(event)
+            if letter == "x":
+                return cut(event)
+            if letter == "a":
+                return select_all(event)
+            return None
+
+        widget.bind("<Command-Key>", on_command_key, add="+")
+
         # 우클릭 컨텍스트 메뉴 (macOS는 우클릭이 Button-2로 오는 경우도 있어 둘 다 등록)
         menu = tk.Menu(widget, tearoff=0)
         menu.add_command(label="잘라내기", command=cut)

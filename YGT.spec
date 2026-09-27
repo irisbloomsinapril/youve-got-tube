@@ -15,4 +15,5 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='YGT', console=False,
 collection = COLLECT(exe, a.binaries, a.datas, name='YGT', strip=False, upx=False)
 if sys.platform == 'darwin':
     app = BUNDLE(collection, name='YGT.app', bundle_identifier='io.github.irisbloomsinapril.ygt',
-                 info_plist={'CFBundleShortVersionString': '2.1.0', 'NSHighResolutionCapable': True})
+                 info_plist={'CFBundleShortVersionString': '2.1.0', 'NSHighResolutionCapable': True,
+                              'NSPrincipalClass': 'NSApplication'})
