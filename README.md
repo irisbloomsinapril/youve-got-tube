@@ -1,95 +1,108 @@
-# YGT (You've Got Tube)
+# YGT — You've Got Tube
 
-yt-dlp를 감싼 간단한 GUI 다운로더입니다. 창에서 URL만 붙여넣으면 다운로드됩니다.
+링크를 붙여넣고 화질을 선택하면 내 폴더에 저장하는 Python/Tkinter 데스크톱 앱입니다.
 
-## 파일 구성
+차분한 어두운 테마에서 화질과 영상 코덱을 나란히 선택합니다.
 
-- `app.py` — 앱 소스코드 (tkinter GUI, Windows/Mac 공용)
-- `requirements.txt` — 필요한 패키지 목록
-- `build.bat` — Windows용 exe 패키징 스크립트
-- `build_mac.sh` — macOS용 .app 패키징 스크립트
-- `ygt_logo.png` — (선택) 로고 이미지. 있으면 앱 헤더/창 아이콘에 자동으로 쓰입니다.
+## 사용 방법
 
-## 로고 적용 방법 (선택)
+1. 앱을 열면 다운로드 엔진 업데이트를 자동으로 확인합니다.
+2. **다운로드** 탭에 영상 링크를 붙여넣습니다. 여러 개는 한 줄에 하나씩 입력합니다.
+3. 화질과 코덱을 선택하고 **다운로드 시작**을 누릅니다. 기본값은 1080p 이하·자동 코덱입니다.
+4. **폴더 열기**로 결과를 확인합니다. 저장 폴더와 화질은 다음 실행에도 유지됩니다.
 
-생성해드린 로고 이미지를 `ygt_logo.png`라는 이름으로 `app.py`가 있는 이 폴더에 저장하세요.
-- 넣으면: 앱 실행 시 상단 헤더와 창(작업표시줄) 아이콘에 자동으로 표시됩니다.
-- exe/앱 파일 자체의 아이콘(탐색기에서 보이는 아이콘)까지 바꾸고 싶다면 추가 변환이 필요합니다.
-  - Windows: `ygt_logo.png`를 무료 온라인 변환기(예: icoconvert.com, convertio.co)로 `.ico`로 변환 → `ygt.ico`로 이 폴더에 저장 → `build.bat`이 자동으로 인식해 적용합니다.
-  - Mac: 같은 방식으로 `.icns`로 변환 → `ygt.icns`로 저장 → `build_mac.sh`가 자동 인식합니다.
-  - 두 파일 다 없어도 빌드는 정상 진행되며, 그 경우 기본 아이콘으로 빌드됩니다.
+MP3가 필요하면 화질 목록에서 **오디오만 (mp3)**를 선택하세요. 자막, 재생목록, 썸네일은 선택 사항입니다. 개별 포맷이 필요할 때만 **포맷 직접 선택** 탭을 사용하세요. 조합 표와 개별 포맷 목록 모두 선택한 ID와 코덱을 그대로 사용합니다. 직접 선택한 영상은 재인코딩 없이 MKV로 병합/저장합니다. 오디오만 선택하면 원본 오디오 형식을 유지합니다.
 
-## 중요: Windows용과 Mac용은 따로 빌드해야 합니다
+다운로드 버튼과 진행률은 창 아래에 항상 표시됩니다. 일반 마우스 휠 및 Tk 9 고해상도 휠·트랙패드 입력을 모두 지원합니다. 상단 헤더나 탐색 버튼 위에서도 현재 본문을 스크롤할 수 있고, 표와 입력창 안에서는 해당 영역을 먼저 스크롤합니다. 넓은 표는 아래 가로 스크롤바 또는 Shift+휠을 사용하세요.
 
-PyInstaller는 "지금 실행 중인 OS용"으로만 빌드합니다. 즉:
-- Windows PC에서 `build.bat`을 실행하면 **Windows용 .exe**만 나옵니다.
-- macOS에서 `build_mac.sh`를 실행하면 **Mac용 .app**만 나옵니다.
-- Windows에서 Mac용을 만들거나 그 반대는 불가능합니다.
+## 코덱 선택
 
-맥북 사용자에게도 배포하려면, Mac 컴퓨터(본인 것이든 지인 것이든)에서 `build_mac.sh`를 한 번 실행해서 `.app` 파일을 따로 만들어야 합니다. Mac이 없다면 지인에게 이 폴더를 통째로 보내 macOS에서 빌드를 부탁하면 됩니다.
+| 선택 | 결과 | 동작 |
+| --- | --- | --- |
+| 자동 선택 | MP4 | 제공되는 포맷을 자동 선택 |
+| H.264 | MP4 | H.264 영상 + M4A 오디오 |
+| AV1 | MP4 | AV1 영상 + M4A 오디오 |
+| VP9 | WebM | VP9 영상 + WebM 오디오 |
+| 오디오만 | MP3 | 영상 코덱 설정을 사용하지 않고 MP3로 변환 |
 
-## Windows용 exe 만들기 (Windows PC에서 1회 실행)
+특정 코덱을 고르면 다른 코덱으로 자동 변경하지 않습니다. 해당 화질·코덱·컨테이너 조합이 없으면 실패 원인을 기록에 표시합니다. 재인코딩으로 코덱을 만드는 기능은 아닙니다. 실제 제공 포맷은 영상마다 다릅니다.
 
-exe를 만드는 사람 컴퓨터에만 Python이 필요합니다. exe를 받는 사람은 Python이 전혀 필요 없습니다.
+## 자동 업데이트
 
-1. [python.org](https://www.python.org/downloads/)에서 Python 설치 (설치 시 "Add to PATH" 체크)
-2. [ffmpeg 다운로드](https://www.gyan.dev/ffmpeg/builds/)에서 "release essentials" zip을 받아 압축 해제 후, 안에 있는 `bin\ffmpeg.exe`를 이 폴더(`app.py`가 있는 폴더)로 복사
-3. (선택) 로고를 넣으려면 위 "로고 적용 방법" 참고
-4. 이 폴더에서 `build.bat` 더블클릭
-5. 완료되면 `dist\YGT.exe` 파일 생성됨
+- 앱을 **실행할 때마다** 공식 yt-dlp stable 최신 버전을 확인합니다. 오른쪽 위 **업데이트 확인**으로 다시 확인할 수도 있습니다.
+- 별도의 공식 실행파일을 다운로드하고 SHA256과 실행 버전을 검증한 뒤 교체합니다.
+- 기존 엔진이 있으면 업데이트 서버에 연결하지 못해도 기존 버전으로 계속 사용할 수 있습니다. 최초 설치에는 인터넷이 필요합니다.
+- 작업 중에는 엔진 교체와 다운로드 설정 변경을 막습니다. 업데이트·다운로드는 GUI와 별도 스레드에서 실행됩니다.
+- **자동 업데이트 대상은 yt-dlp입니다.** YGT UI 자체를 새 버전으로 바꾸려면 새 앱을 받아 교체하세요.
 
-## Mac용 .app 만들기 (Mac에서 1회 실행)
+엔진은 macOS의 `~/Library/Application Support/YGT/engine`, Windows의 `%LOCALAPPDATA%/YGT/engine`, Linux의 `~/.local/share/YGT/engine`에 저장됩니다. 개발/테스트에서는 `YGT_ENGINE_DIR`로 변경할 수 있습니다.
 
-빌드하는 Mac에만 Python(3.9 이상)이 필요합니다. 앱을 받는 사람은 Python이 전혀 필요 없습니다.
+## 실행에 필요한 것
 
-1. macOS에 Python3가 없다면 설치: `python.org`에서 받거나, Homebrew가 있다면 `brew install python`
-2. ffmpeg 바이너리 준비 (둘 중 하나):
-   - Homebrew 사용: `brew install ffmpeg` 후 `cp $(which ffmpeg) ./ffmpeg`
-   - 정적 빌드: [evermeet.cx/ffmpeg](https://evermeet.cx/ffmpeg/)에서 받아 압축 해제 후 `ffmpeg`라는 이름으로 이 폴더에 복사
-3. (선택) 로고를 넣으려면 위 "로고 적용 방법" 참고
-4. 터미널에서 이 폴더로 이동 후:
-   ```
-   chmod +x build_mac.sh
-   ./build_mac.sh
-   ```
-5. 완료되면 `dist/YGT.app` 생성됨
+배포된 앱은 Python 설치가 필요 없습니다. 다음 외부 도구는 별도로 준비해야 합니다.
 
-### Mac에서 받는 사람이 실행할 때 "확인되지 않은 개발자" 경고가 뜨면
+- **Deno**: YouTube JavaScript 처리에 사용합니다. 설치된 Deno를 자동으로 찾고, 없으면 Node를 찾습니다. 호환 버전은 [yt-dlp EJS 공식 안내](https://github.com/yt-dlp/yt-dlp/wiki/EJS)를 따르세요.
+- **FFmpeg**: 영상·오디오 병합과 MP3 변환에 사용합니다. 앱에 포함하거나 시스템에 설치하세요.
 
-Apple 개발자 서명이 없는 앱이라 macOS Gatekeeper가 처음엔 막습니다. 받는 사람에게 다음 중 하나를 안내하세요:
-- `YGT.app`을 **우클릭(또는 control+클릭) → 열기** → 뜨는 창에서 다시 "열기" 클릭 (최초 1회만 필요)
-- 또는 터미널에서: `xattr -cr /path/to/YGT.app` 실행 후 실행
+macOS Homebrew를 사용한다면:
 
-## 배포 방법
+```sh
+brew install deno ffmpeg
+```
 
-Windows 사용자에게는 `dist\YGT.exe`를, Mac 사용자에게는 `dist/YGT.app`을 전달하세요 (카카오톡, 구글 드라이브, USB 등 무엇이든 상관없음).
-받는 사람은 그냥 더블클릭해서 실행하면 됩니다 (Mac은 위 Gatekeeper 안내 참고). 설치나 Python 필요 없음.
+Finder에서 실행해도 `/opt/homebrew/bin`, `/usr/local/bin`, `~/.deno/bin`의 Deno를 찾습니다. FFmpeg도 Homebrew 경로를 확인합니다. Windows에서는 Deno/FFmpeg를 PATH에 등록하세요.
 
-## 앱 사용법
+현재 수정본은 Apple Silicon Mac에서 검증했습니다. Windows 빌드 설정과 CI는 포함하지만 실제 Windows GUI 실행은 별도 확인이 필요합니다. GitHub Actions의 기본 빌드에는 Deno/FFmpeg를 포함하지 않습니다. Apple 서명·공증도 별도입니다.
 
-### A. 영상 1개, 화질/코덱 정밀 선택
+## 소스 실행
 
-1. YGT 실행
-2. URL 1개 붙여넣고 "🔍 정보 가져오기" 클릭
-3. **추천 조합** 표에 영상+음성이 자동으로 합쳐진 조합이 고화질 순(위가 고화질)으로 뜸. 원하는 줄을 더블클릭하면 바로 다운로드 시작 (한 번 클릭으로 끝)
-   - 코덱이 avc1(H.264)인 항목은 "편집 프로그램 호환 좋음"이라고 표시됨 — 프리미어 프로 등에서 바로 불러오기 좋은 코덱
-   - 표 아래 작은 안내문에도 편집용 추천 코덱이 적혀 있음
-4. 더 세밀하게 고르고 싶으면 "전체 포맷 목록(고급)"에서 Ctrl+클릭으로 영상 1개 + 음성 1개를 직접 조합해서 "다운로드 시작" 클릭 가능
-5. 필요하면 재생목록 전체 다운로드, 자막 다운로드, mp3 변환 체크
-6. 저장 위치 확인/변경
-7. 다운로드가 시작되면 진행률 바에 실시간 퍼센트/속도/남은시간이 표시됨
+Python 3.10 이상과 Tkinter가 필요합니다. macOS에서는 Tkinter가 포함된 Python 배포판을 사용하세요.
 
-### B. 여러 영상 한 번에 다운로드
+```sh
+python3 app.py
+```
 
-1. URL 입력창에 한 줄에 하나씩 여러 개 붙여넣기 → 화면 상단 안내 문구가 "📦 링크 N개 입력됨"으로 바뀌고, "2. 단일 링크 모드" 섹션은 자동으로 비활성화되며 "3. 여러 링크 일괄 다운로드" 섹션이 활성 상태가 됩니다
-2. "👀 제목 미리보기" 클릭 → URL 옆에 바로 제목/길이가 표로 뜨면서 링크를 제대로 넣었는지 확인 가능 (잘못된 링크는 ❌ 표시)
-3. 표에서 **원하는 영상 제목을 더블클릭하면 그 영상 하나만 바로 다운로드**됩니다 (일괄 다운로드 화질 설정 적용)
-4. 여러 개를 한 번에 받고 싶으면 "일괄 다운로드 화질" 드롭다운에서 화질/mp3 선택 후 "다운로드 시작" 클릭 → 순서대로 하나씩 다운로드되며, 하나가 실패해도 나머지는 계속 진행됨
+GUI와 엔진 연결은 표준 라이브러리만 사용합니다. `pip install yt-dlp`는 필요 없습니다.
 
-※ 화면 상단 배너가 현재 몇 개의 링크가 입력되어 있는지, 어느 섹션을 써야 하는지 항상 알려줍니다.
+## 앱 빌드
 
-## 참고
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+./build_mac.sh
+```
 
-- Windows Defender/백신이 PyInstaller로 만든 exe를 처음 보는 프로그램이라 경고할 수 있습니다 (오탐). 필요하면 "추가 정보 → 실행"으로 진행하세요.
-- 저작권이 있는 콘텐츠 다운로드는 유튜브 이용약관 및 저작권법 위반 소지가 있으니, 개인 소장 등 허용된 범위 내에서만 사용하세요.
-- yt-dlp는 유튜브 쪽 변경사항에 따라 가끔 업데이트가 필요합니다. 다운로드가 안 되기 시작하면 `requirements.txt`의 yt-dlp 버전을 최신으로 올리고 다시 빌드하세요.
+macOS 결과는 `dist/YGT.app`입니다. Windows에서는 가상환경 활성화 후 `build.bat`을 실행하고 **`dist/YGT` 폴더 전체**를 배포하세요.
+
+`ffmpeg` / `ffmpeg.exe` 및 선택적으로 `ffprobe` / `ffprobe.exe`를 소스 폴더에 두면 빌드에 포함합니다. macOS에서는 `YGT_FFMPEG=/path/to/ffmpeg`로 지정할 수도 있습니다. 타인에게 배포하기 전 다른 컴퓨터에서 라이브러리 의존성과 해당 바이너리의 라이선스를 확인하세요.
+
+GitHub의 **Actions → Build desktop apps → Run workflow**로 macOS/Windows 빌드 파일을 만들 수도 있습니다. 이 작업은 다운로드 가능한 artifact를 만들며 Release를 자동 게시하지 않습니다. macOS 빌드 아키텍처는 선택된 runner를 따릅니다.
+
+## 테스트
+
+```sh
+python3 -m unittest discover -s tests -p "test_*.py" -v
+# 실제 데스크톱 세션에서 스크롤 및 UI 동작 검증:
+YGT_UI_TESTS=1 python3 -m unittest discover -s tests -p test_ui.py -v
+```
+
+업데이트 실패/검증 실패 시 기존 엔진 보존, 앱 재실행 시 확인, 수동 재확인, 옵션 전달 및 오류 전달을 검사합니다. UI 검증은 작은 창, 중첩 스크롤, 탭에 따른 다운로드 선택, 설정 저장을 확인합니다.
+
+## GitHub에 올릴 파일
+
+소스, `tests/`, `.github/`, 빌드 설정과 README를 올리세요. `.gitignore`는 가상환경, 빌드 결과, FFmpeg 바이너리, 백업을 제외합니다. 앱 배포 ZIP은 저장소 소스 대신 GitHub Releases에 첨부하면 됩니다.
+
+이미 이전 버전에서 생성물을 Git으로 추적 중인 저장소라면 `.gitignore`만 추가해도 기존 추적은 사라지지 않습니다. 로컬 파일을 보존하면서 추적만 해제하려면:
+
+```sh
+git rm -r --cached --ignore-unmatch build dist __pycache__ venv .DS_Store ffmpeg ffmpeg.exe
+```
+
+그 다음 변경 내역을 확인하고 커밋하세요. 이 명령은 과거 커밋 기록을 삭제하지 않습니다.
+
+## 오류 확인
+
+**작업 기록**에서 메시지를 확인하거나 **기록 복사**로 공유할 수 있습니다. HTTP 403은 YouTube 서버가 데이터 요청을 거부한 것으로, 엔진 업데이트 외에도 로그인·IP·영상별 제한에 영향을 받습니다. 최신 엔진이 모든 403을 해결한다고 보장하지 않습니다.
+
+공식 프로젝트: [yt-dlp](https://github.com/yt-dlp/yt-dlp) · [Deno](https://deno.com/) · [FFmpeg](https://ffmpeg.org/)

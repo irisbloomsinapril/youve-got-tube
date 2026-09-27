@@ -10,6 +10,7 @@ Python이나 명령줄 없이, 창을 열어 URL만 붙여넣으면 다운로드
 
 import os
 import sys
+import shutil
 import threading
 import queue
 import traceback
@@ -18,10 +19,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-try:
-    import yt_dlp
-except ImportError:
-    yt_dlp = None
+import ygt_engine as yt_dlp
+from ygt_ui import DesktopUI
+from ygt_formats import selection as codec_selection
 
 
 def resource_path(relative_path: str) -> str:
@@ -36,7 +36,7 @@ APP_SUBTITLE = "You've Got Tube — 간편 유튜브 다운로더"
 # 브랜드 컬러
 COLOR_PRIMARY = "#2F6FED"
 COLOR_PRIMARY_DARK = "#1F4FBF"
-COLOR_BG = "#F5F7FB"
+COLOR_BG = "#141820"
 COLOR_TEXT_MUTED = "#6B7280"
 
 
@@ -96,15 +96,6 @@ COMBO_COLUMN_WIDTHS = {
     "ext": 60,
     "size": 90,
     "note": 160,
-}
-
-# 일괄 다운로드(URL 여러 개) 시 사용하는 화질 프리셋 (고화질이 위)
-QUALITY_PRESETS = {
-    "최고 화질 (mp4)": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-    "1080p 이하 (mp4)": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]",
-    "720p 이하 (mp4)": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]",
-    "480p 이하 (mp4)": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]",
-    "오디오만 (mp3)": "bestaudio/best",
 }
 
 EDITOR_FRIENDLY_VCODEC_PREFIXES = ("avc1", "h264")
@@ -262,17 +253,19 @@ def build_combo_rows(formats):
     return combos
 
 
-class DownloaderApp(tk.Tk):
+class DownloaderApp(DesktopUI, tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_TITLE} — You've Got Tube")
-        self.geometry("1000x900")
-        self.minsize(920, 780)
+        self.geometry(f"960x{min(820, self.winfo_screenheight() - 100)}")
+        self.minsize(800, 560)
         self.configure(background=COLOR_BG)
 
         self._logo_image = None  # 참조 유지 (가비지 컬렉션 방지)
+        self._last_editable_widget = None
         self._apply_theme()
         self._set_window_icon()
+        self._build_menu()
 
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.progress_queue: "queue.Queue[dict]" = queue.Queue()
@@ -290,48 +283,143 @@ class DownloaderApp(tk.Tk):
         self._poll_log_queue()
         self._poll_progress_queue()
 
-        if yt_dlp is None:
-            messagebox.showerror(
-                APP_TITLE,
-                "yt-dlp 모듈을 찾을 수 없습니다.\n"
-                "개발 환경에서 실행 중이라면 'pip install yt-dlp'를 먼저 실행하세요.",
-            )
+    # ---------- 메뉴바 (macOS에서 Cmd 단축키가 실제로 동작하려면 필요) ----------
+    def _build_menu(self):
+        menubar = tk.Menu(self)
 
-    # ---------- 테마 / 아이콘 ----------
-    def _apply_theme(self):
-        style = ttk.Style(self)
+        # PyInstaller로 패키징한 macOS 앱에서는 Cmd+키를 누르는 순간 OS가 이 메뉴의
+        # accelerator와 먼저 매칭시키는데, 그 처리 과정에서 self.focus_get()이 None을
+        # 반환해 버리는 경우가 있다(터미널에서 바로 실행할 때는 재현되지 않음).
+        # 그래서 <FocusIn>으로 마지막으로 포커스를 받았던 입력 위젯을 직접 기억해뒀다가
+        # focus_get()이 실패할 때 그걸 대신 사용한다.
+        def _track_focus(event):
+            widget = event.widget
+            if isinstance(widget, (tk.Text, tk.Entry, ttk.Entry)) and str(widget.cget("state")) != "disabled":
+                self._last_editable_widget = widget
+
+        self.bind_all("<FocusIn>", _track_focus, add="+")
+
+        def _do(virtual_event):
+            widget = self.focus_get() or self._last_editable_widget
+            if widget is not None:
+                widget.event_generate(virtual_event)
+            return "break"
+
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        edit_menu.add_command(label="잘라내기", accelerator="Cmd+X", command=lambda: _do("<<Cut>>"))
+        edit_menu.add_command(label="복사", accelerator="Cmd+C", command=lambda: _do("<<Copy>>"))
+        edit_menu.add_command(label="붙여넣기", accelerator="Cmd+V", command=lambda: _do("<<Paste>>"))
+        edit_menu.add_separator()
+        edit_menu.add_command(label="전체 선택", accelerator="Cmd+A", command=lambda: _do("<<SelectAll>>"))
+        menubar.add_cascade(label="편집", menu=edit_menu)
+
+        self.config(menu=menubar)
+
+        # Tk에는 <<SelectAll>> 가상 이벤트에 대한 기본 동작이 없으므로 직접 구현
+        def select_all(event=None):
+            widget = self.focus_get() or self._last_editable_widget
+            if isinstance(widget, tk.Text):
+                widget.tag_add("sel", "1.0", "end-1c")
+                widget.mark_set("insert", "end-1c")
+                widget.see("insert")
+            elif isinstance(widget, (tk.Entry, ttk.Entry)):
+                widget.selection_range(0, "end")
+            return "break"
+
+        self.bind_all("<<SelectAll>>", select_all)
+        # 메뉴 accelerator 등록만으로 실제 키 입력이 전달 안 되는 Tk 빌드를 위한 보조 바인딩
+        self.bind_all("<Command-a>", lambda e: self.event_generate("<<SelectAll>>"))
+        self.bind_all("<Control-a>", lambda e: self.event_generate("<<SelectAll>>"))
+
+    # ---------- IME 상태와 무관하게 항상 동작하는 붙여넣기/전체선택/지우기 ----------
+    def _paste_into(self, widget):
         try:
-            style.theme_use("clam")
+            clip = widget.clipboard_get()
+        except tk.TclError:
+            messagebox.showinfo(APP_TITLE, "클립보드에 붙여넣을 내용이 없습니다.")
+            return
+        try:
+            widget.delete("sel.first", "sel.last")
         except tk.TclError:
             pass
+        widget.insert("insert", clip)
+        widget.focus_set()
+        self._update_mode_banner()
 
-        style.configure(".", background=COLOR_BG, font=(FONT_FAMILY, 10))
-        style.configure("TFrame", background=COLOR_BG)
-        style.configure("TLabel", background=COLOR_BG)
-        style.configure("TLabelframe", background=COLOR_BG, bordercolor="#D6DCE8")
-        style.configure(
-            "TLabelframe.Label", background=COLOR_BG, foreground="#333333", font=(FONT_FAMILY, 10, "bold")
-        )
-        style.configure("TCheckbutton", background=COLOR_BG)
+    def _select_all_in(self, widget):
+        widget.tag_add("sel", "1.0", "end-1c")
+        widget.mark_set("insert", "end-1c")
+        widget.focus_set()
 
-        style.configure(
-            "Accent.TButton",
-            background=COLOR_PRIMARY,
-            foreground="white",
-            font=(FONT_FAMILY, 11, "bold"),
-            padding=(14, 8),
-            borderwidth=0,
-        )
-        style.map(
-            "Accent.TButton",
-            background=[("active", COLOR_PRIMARY_DARK), ("disabled", "#A9B6D6")],
-        )
+    def _clear_text(self, widget):
+        widget.delete("1.0", "end")
+        widget.focus_set()
+        self._update_mode_banner()
 
-        style.configure("Secondary.TButton", padding=(10, 5))
+    # ---------- 텍스트 위젯 편집 단축키 / 우클릭 메뉴 ----------
+    def _enable_text_editing_shortcuts(self, widget):
+        """복사/붙여넣기/잘라내기/전체선택 단축키와 우클릭 컨텍스트 메뉴를 붙여준다.
+        macOS에서 PyInstaller로 패키징한 tkinter 앱은 기본 Aqua 바인딩이
+        먹지 않는 경우가 있어, Cmd/Ctrl 단축키를 직접 처리한다."""
 
-        style.configure("Treeview", rowheight=24, fieldbackground="white")
-        style.configure("Treeview.Heading", font=(FONT_FAMILY, 9, "bold"))
+        def copy(event=None):
+            try:
+                text = widget.get("sel.first", "sel.last")
+            except tk.TclError:
+                text = widget.get("1.0", "end-1c")
+            widget.clipboard_clear()
+            widget.clipboard_append(text)
+            return "break"
 
+        def cut(event=None):
+            copy()
+            try:
+                widget.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+            return "break"
+
+        def paste(event=None):
+            if str(widget.cget("state")) != "disabled":
+                self._paste_into(widget)
+            return "break"
+
+        def select_all(event=None):
+            widget.tag_add("sel", "1.0", "end-1c")
+            widget.mark_set("insert", "end-1c")
+            widget.see("insert")
+            return "break"
+
+        # macOS(Command)와 Windows/Linux(Control) 둘 다 지원
+        for mod in ("Command", "Control"):
+            widget.bind(f"<{mod}-c>", copy)
+            widget.bind(f"<{mod}-x>", cut)
+            widget.bind(f"<{mod}-v>", paste)
+            widget.bind(f"<{mod}-V>", paste)
+            widget.bind(f"<{mod}-a>", select_all)
+
+        widget.bind("<<Paste>>", paste)
+
+        # 우클릭 컨텍스트 메뉴 (macOS는 우클릭이 Button-2로 오는 경우도 있어 둘 다 등록)
+        menu = tk.Menu(widget, tearoff=0)
+        menu.add_command(label="잘라내기", command=cut)
+        menu.add_command(label="복사", command=copy)
+        menu.add_command(label="붙여넣기", command=paste)
+        menu.add_separator()
+        menu.add_command(label="전체 선택", command=select_all)
+
+        def show_context_menu(event):
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+            return "break"
+
+        widget.bind("<Button-3>", show_context_menu)
+        widget.bind("<Button-2>", show_context_menu)
+        widget.bind("<Control-Button-1>", show_context_menu)  # macOS 트랙패드 관습적 우클릭
+
+    # ---------- 테마 / 아이콘 ----------
     def _set_window_icon(self):
         """ygt_logo.png (없으면 ygt_icon.png)를 창/작업표시줄 아이콘으로 사용. 없으면 조용히 건너뜀."""
         for name in ("ygt_icon.png", "ygt_logo.png"):
@@ -360,311 +448,16 @@ class DownloaderApp(tk.Tk):
         return None
 
     # ---------- UI ----------
-    def _build_ui(self):
-        pad = {"padx": 12, "pady": 8}
-
-        # ===== 헤더 (로고 + 이름) =====
-        header = tk.Frame(self, background=COLOR_PRIMARY, height=64)
-        header.pack(fill="x")
-        header.pack_propagate(False)
-
-        logo_img = self._load_header_logo(max_size=40)
-        if logo_img is not None:
-            self._header_logo_ref = logo_img  # 참조 유지
-            logo_label = tk.Label(header, image=logo_img, background=COLOR_PRIMARY)
-            logo_label.pack(side="left", padx=(16, 8), pady=10)
-
-        title_col = tk.Frame(header, background=COLOR_PRIMARY)
-        title_col.pack(side="left", pady=8)
-        tk.Label(
-            title_col,
-            text=APP_TITLE,
-            background=COLOR_PRIMARY,
-            foreground="white",
-            font=(FONT_FAMILY, 16, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
-            title_col,
-            text=APP_SUBTITLE,
-            background=COLOR_PRIMARY,
-            foreground="#DCE6FF",
-            font=(FONT_FAMILY, 9),
-        ).pack(anchor="w")
-
-        # ===== 스크롤 가능한 본문 =====
-        body_canvas = tk.Canvas(self, background=COLOR_BG, highlightthickness=0)
-        body_scroll = ttk.Scrollbar(self, orient="vertical", command=body_canvas.yview)
-        body = ttk.Frame(body_canvas)
-        body.bind("<Configure>", lambda e: body_canvas.configure(scrollregion=body_canvas.bbox("all")))
-        body_canvas.create_window((0, 0), window=body, anchor="nw")
-        body_canvas.configure(yscrollcommand=body_scroll.set)
-        body_canvas.pack(side="left", fill="both", expand=True)
-        body_scroll.pack(side="right", fill="y")
-
-        def _on_mousewheel(event):
-            body_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        body_canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        # ---- 1. URL 입력 ----
-        url_box = ttk.Labelframe(body, text="1. 영상 URL 입력", padding=10)
-        url_box.pack(fill="x", **pad)
-        ttk.Label(
-            url_box,
-            text="한 줄에 하나씩 붙여넣으세요. 입력한 개수에 따라 아래 2번 또는 3번 섹션이 자동으로 켜집니다.",
-            foreground=COLOR_TEXT_MUTED,
-        ).pack(anchor="w")
-        entry_row = ttk.Frame(url_box)
-        entry_row.pack(fill="x", pady=(6, 0))
-        self.url_text = tk.Text(entry_row, height=4, wrap="none")
-        self.url_text.pack(side="left", fill="x", expand=True)
-        url_scroll = ttk.Scrollbar(entry_row, orient="vertical", command=self.url_text.yview)
-        self.url_text.configure(yscrollcommand=url_scroll.set)
-        url_scroll.pack(side="left", fill="y")
-
-        self.mode_banner = ttk.Label(url_box, text="", font=(FONT_FAMILY, 9, "bold"))
-        self.mode_banner.pack(anchor="w", pady=(8, 0))
-        self.url_text.bind("<KeyRelease>", self._update_mode_banner)
-        self.url_text.bind("<<Paste>>", lambda e: self.after(10, self._update_mode_banner))
-
-        # ---- 2. 단일 링크 모드 (URL 정확히 1개) ----
-        single_box = ttk.Labelframe(body, text="2. 단일 링크 모드 — 화질/코덱을 직접 골라 다운로드 (URL 1개 전용)", padding=10)
-        single_box.pack(fill="both", expand=True, **pad)
-
-        self.fetch_btn = ttk.Button(
-            single_box, text="🔍 정보 가져오기", style="Secondary.TButton", command=self._start_fetch_info
-        )
-        self.fetch_btn.pack(anchor="w")
-
-        self.title_label = ttk.Label(single_box, text="", font=(FONT_FAMILY, 10, "bold"), wraplength=900)
-        self.title_label.pack(fill="x", pady=(8, 0))
-
-        ttk.Label(
-            single_box,
-            text="추천 조합 (고화질 순 정렬 · 원하는 줄을 더블클릭하면 바로 다운로드됩니다)",
-            font=(FONT_FAMILY, 9, "bold"),
-        ).pack(anchor="w", pady=(10, 0))
-        combo_container = ttk.Frame(single_box)
-        combo_container.pack(fill="both", expand=True, pady=(4, 0))
-        self.combo_tree = ttk.Treeview(
-            combo_container, columns=COMBO_COLUMNS, show="headings", selectmode="browse", height=6
-        )
-        for col in COMBO_COLUMNS:
-            self.combo_tree.heading(col, text=COMBO_COLUMN_LABELS[col])
-            self.combo_tree.column(col, width=COMBO_COLUMN_WIDTHS[col], anchor="center")
-        self.combo_tree.column("note", anchor="w")
-        combo_vsb = ttk.Scrollbar(combo_container, orient="vertical", command=self.combo_tree.yview)
-        self.combo_tree.configure(yscrollcommand=combo_vsb.set)
-        self.combo_tree.pack(side="left", fill="both", expand=True)
-        combo_vsb.pack(side="left", fill="y")
-        self.combo_tree.bind("<Double-1>", self._on_combo_double_click)
-
-        ttk.Label(
-            single_box,
-            text="💡 프리미어 프로 등 편집 프로그램에 쓰려면 avc1(H.264) 코덱의 mp4를 추천합니다. "
-            "VP9/AV1 코덱은 편집 시 버벅임이 있을 수 있어요.",
-            foreground=COLOR_TEXT_MUTED,
-            font=(FONT_FAMILY, 8),
-        ).pack(anchor="w", pady=(6, 0))
-
-        self.mp3_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            single_box,
-            text="선택한 항목을 mp3로 변환",
-            variable=self.mp3_var,
-        ).pack(anchor="w", pady=(6, 0))
-
-        self.adv_toggle_btn = ttk.Button(
-            single_box,
-            text="🔧 고급: 전체 포맷 직접 조합 보기 ▸",
-            style="Secondary.TButton",
-            command=self._toggle_advanced,
-        )
-        self.adv_toggle_btn.pack(anchor="w", pady=(10, 0))
-
-        self.adv_container = ttk.Frame(single_box)
-        ttk.Label(
-            self.adv_container,
-            text="Ctrl+클릭으로 '영상만' 1개 + '음성만' 1개를 직접 골라 조합할 수 있습니다.",
-            foreground=COLOR_TEXT_MUTED,
-        ).pack(anchor="w")
-        raw_container = ttk.Frame(self.adv_container)
-        raw_container.pack(fill="both", expand=True, pady=(6, 0))
-        self.tree = ttk.Treeview(
-            raw_container, columns=RAW_COLUMNS, show="headings", selectmode="extended", height=6
-        )
-        for col in RAW_COLUMNS:
-            self.tree.heading(col, text=RAW_COLUMN_LABELS[col])
-            self.tree.column(col, width=RAW_COLUMN_WIDTHS[col], anchor="center")
-        self.tree.column("note", anchor="w")
-        vsb = ttk.Scrollbar(raw_container, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="left", fill="y")
-        # adv_container는 기본적으로 접혀 있음 (버튼으로 펼침)
-
-        # ---- 3. 여러 링크 일괄 다운로드 (URL 2개 이상) ----
-        batch_box = ttk.Labelframe(body, text="3. 여러 링크 일괄 다운로드 — URL 2개 이상일 때 사용", padding=10)
-        batch_box.pack(fill="both", expand=True, **pad)
-
-        self.preview_btn = ttk.Button(
-            batch_box,
-            text="👀 제목 미리보기 (링크 확인)",
-            style="Secondary.TButton",
-            command=self._start_preview_titles,
-        )
-        self.preview_btn.pack(anchor="w")
-
-        preview_frame = ttk.Frame(batch_box)
-        preview_frame.pack(fill="x", pady=(10, 0))
-        ttk.Label(
-            preview_frame,
-            text="링크별 제목 확인 결과 — 더블클릭: 그 영상 1개 바로 다운로드 · Ctrl+클릭/Shift+클릭: 여러 개 선택",
-        ).pack(anchor="w")
-        preview_container = ttk.Frame(preview_frame)
-        preview_container.pack(fill="x", pady=(4, 0))
-        self.preview_tree = ttk.Treeview(
-            preview_container,
-            columns=("num", "status", "title", "url"),
-            show="headings",
-            selectmode="extended",
-            height=5,
-        )
-        self.preview_tree.heading("num", text="#")
-        self.preview_tree.heading("status", text="상태")
-        self.preview_tree.heading("title", text="제목")
-        self.preview_tree.heading("url", text="URL")
-        self.preview_tree.column("num", width=30, anchor="center")
-        self.preview_tree.column("status", width=60, anchor="center")
-        self.preview_tree.column("title", width=380, anchor="w")
-        self.preview_tree.column("url", width=380, anchor="w")
-        preview_vsb = ttk.Scrollbar(preview_container, orient="vertical", command=self.preview_tree.yview)
-        self.preview_tree.configure(yscrollcommand=preview_vsb.set)
-        self.preview_tree.pack(side="left", fill="x", expand=True)
-        preview_vsb.pack(side="left", fill="y")
-        self.preview_tree.bind("<Double-1>", self._on_preview_double_click)
-
-        preview_action_row = ttk.Frame(batch_box)
-        preview_action_row.pack(fill="x", pady=(6, 0))
-        self.download_selected_btn = ttk.Button(
-            preview_action_row,
-            text="⬇ 선택한 항목만 다운로드",
-            style="Secondary.TButton",
-            command=self._download_selected_previews,
-        )
-        self.download_selected_btn.pack(side="left")
-        ttk.Label(
-            preview_action_row,
-            text="(위 표에서 Ctrl+클릭으로 여러 제목을 고른 뒤 눌러도 됩니다)",
-            foreground=COLOR_TEXT_MUTED,
-        ).pack(side="left", padx=(8, 0))
-
-        preset_row = ttk.Frame(batch_box)
-        preset_row.pack(fill="x", pady=(10, 0))
-        ttk.Label(preset_row, text="일괄 다운로드 화질:").pack(side="left")
-        self.preset_var = tk.StringVar(value=list(QUALITY_PRESETS.keys())[0])
-        preset_combo = ttk.Combobox(
-            preset_row,
-            textvariable=self.preset_var,
-            values=list(QUALITY_PRESETS.keys()),
-            state="readonly",
-            width=22,
-        )
-        preset_combo.pack(side="left", padx=(6, 0))
-        ttk.Label(
-            preset_row, text="(아래 '다운로드 시작'을 누르면 이 화질로 전체 순차 다운로드)", foreground=COLOR_TEXT_MUTED
-        ).pack(side="left", padx=(8, 0))
-
-        # ---- 4. 공통 옵션 ----
-        options_box = ttk.Labelframe(body, text="4. 공통 옵션 (단일/일괄 모두 적용)", padding=10)
-        options_box.pack(fill="x", **pad)
-
-        self.playlist_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            options_box, text="재생목록 전체 다운로드", variable=self.playlist_var
-        ).pack(side="left")
-
-        self.subtitle_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            options_box, text="자막 함께 다운로드 (있는 경우)", variable=self.subtitle_var
-        ).pack(side="left", padx=(20, 0))
-
-        self._update_mode_banner()
-
-        # ---- 5. 저장 위치 & 다운로드 ----
-        action_box = ttk.Labelframe(body, text="5. 저장 위치 및 다운로드", padding=10)
-        action_box.pack(fill="x", **pad)
-
-        folder_row = ttk.Frame(action_box)
-        folder_row.pack(fill="x")
-        ttk.Label(folder_row, text="저장 위치:").pack(side="left")
-        self.folder_label = ttk.Label(folder_row, text=self.download_dir, relief="sunken", anchor="w")
-        self.folder_label.pack(side="left", fill="x", expand=True, ipady=3, padx=(6, 6))
-        ttk.Button(folder_row, text="변경", style="Secondary.TButton", command=self._choose_folder).pack(side="left")
-
-        button_frame = ttk.Frame(action_box)
-        button_frame.pack(fill="x", pady=(10, 0))
-        self.download_btn = ttk.Button(
-            button_frame, text="⬇  다운로드 시작", style="Accent.TButton", command=self._start_download
-        )
-        self.download_btn.pack(side="left")
-
-        progress_col = ttk.Frame(button_frame)
-        progress_col.pack(side="left", padx=(14, 0), fill="x", expand=True)
-        self.progress = ttk.Progressbar(progress_col, mode="determinate", maximum=100, length=400)
-        self.progress.pack(fill="x")
-        self.progress_label = ttk.Label(progress_col, text="대기 중", foreground=COLOR_TEXT_MUTED)
-        self.progress_label.pack(anchor="w")
-
-        # ---- 6. 로그 ----
-        log_box = ttk.Labelframe(body, text="6. 진행 상황 로그", padding=10)
-        log_box.pack(fill="both", expand=True, **pad)
-        log_container = ttk.Frame(log_box)
-        log_container.pack(fill="both", expand=True)
-        self.log_text = tk.Text(log_container, height=12, state="disabled", wrap="word")
-        log_vsb = ttk.Scrollbar(log_container, orient="vertical", command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=log_vsb.set)
-        self.log_text.pack(side="left", fill="both", expand=True)
-        log_vsb.pack(side="left", fill="y")
-
     def _choose_folder(self):
         folder = filedialog.askdirectory(initialdir=self.download_dir)
         if folder:
             self.download_dir = folder
-            self.folder_label.config(text=folder)
+            self.folder_label.config(text=self._display_folder(folder))
+            self._save_preferences()
 
     # ---------- 단일/일괄 모드 전환 ----------
-    def _update_mode_banner(self, _event=None):
-        urls = self._get_urls()
-        n = len(urls)
-        if n == 0:
-            text = "URL을 입력하면 아래 섹션이 활성화됩니다."
-            color = COLOR_TEXT_MUTED
-            single_enabled = False
-        elif n == 1:
-            text = "✅ 링크 1개 입력됨 — 아래 '2. 단일 링크 모드'에서 화질/코덱을 골라 다운로드하세요."
-            color = "#1F8A44"
-            single_enabled = True
-        else:
-            text = f"📦 링크 {n}개 입력됨 — '2. 단일 링크 모드'는 비활성화되고, 아래 '3. 여러 링크 일괄 다운로드'를 사용하세요."
-            color = "#B8860B"
-            single_enabled = False
-
-        self.mode_banner.config(text=text, foreground=color)
-        if not self.is_busy:
-            self.fetch_btn.config(state="normal" if single_enabled else "disabled")
-
-    def _toggle_advanced(self):
-        self.adv_visible = not self.adv_visible
-        if self.adv_visible:
-            self.adv_container.pack(fill="both", expand=True, pady=(8, 0))
-            self.adv_toggle_btn.config(text="🔧 고급: 전체 포맷 직접 조합 숨기기 ▾")
-        else:
-            self.adv_container.pack_forget()
-            self.adv_toggle_btn.config(text="🔧 고급: 전체 포맷 직접 조합 보기 ▸")
-
     def _on_preview_double_click(self, event):
-        if self.is_busy:
+        if self.is_busy or self.engine_busy:
             return
         row_id = self.preview_tree.identify_row(event.y)
         if not row_id:
@@ -680,7 +473,7 @@ class DownloaderApp(tk.Tk):
         self._begin_batch_download([url])
 
     def _download_selected_previews(self):
-        if self.is_busy:
+        if self.is_busy or self.engine_busy:
             return
         selection = self.preview_tree.selection()
         if not selection:
@@ -716,9 +509,11 @@ class DownloaderApp(tk.Tk):
         try:
             while True:
                 message = self.log_queue.get_nowait()
+                at_end = self.log_text.yview()[1] >= 0.999
                 self.log_text.config(state="normal")
                 self.log_text.insert("end", message + "\n")
-                self.log_text.see("end")
+                if at_end:
+                    self.log_text.see("end")
                 self.log_text.config(state="disabled")
         except queue.Empty:
             pass
@@ -743,10 +538,7 @@ class DownloaderApp(tk.Tk):
 
     # ---------- 정보 가져오기 (정밀 선택용, URL 1개만) ----------
     def _start_fetch_info(self):
-        if self.is_busy:
-            return
-        if yt_dlp is None:
-            messagebox.showerror(APP_TITLE, "yt-dlp 모듈이 설치되어 있지 않습니다.")
+        if self.is_busy or self.engine_busy:
             return
 
         urls = self._get_urls()
@@ -762,6 +554,7 @@ class DownloaderApp(tk.Tk):
         url = urls[0]
 
         self.is_busy = True
+        self._refresh_controls()
         self.fetch_btn.config(state="disabled")
         self._set_progress(percent=0, text="정보 가져오는 중...")
         self.combo_tree.delete(*self.combo_tree.get_children())
@@ -775,13 +568,11 @@ class DownloaderApp(tk.Tk):
 
     def _run_fetch_info(self, url: str):
         ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
             "noplaylist": True,  # 정보 조회는 대표 영상 1개 기준
             "skip_download": True,
         }
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts, log=self._log) as ydl:
                 info = ydl.extract_info(url, download=False)
 
             formats = info.get("formats") or []
@@ -803,6 +594,7 @@ class DownloaderApp(tk.Tk):
             self.after(0, lambda: self._populate_trees(raw_rows, combo_rows, url))
             self._log(f"정보 가져오기 완료: {self.video_title} (추천 조합 {len(combo_rows)}개, 전체 포맷 {len(raw_rows)}개)")
         except Exception as exc:
+            self._set_progress(percent=0, text="정보 조회 실패 · 작업 기록에서 원인을 확인하세요")
             self._log("정보 가져오기 실패: " + str(exc))
             self._log(traceback.format_exc())
         finally:
@@ -823,18 +615,16 @@ class DownloaderApp(tk.Tk):
         title_text = f"제목: {self.video_title}" if self.video_title else ""
         self.title_label.config(text=title_text)
         self.fetched_url = url
+        self._set_progress(percent=0, text="영상 정보를 불러왔어요 · 포맷을 선택하세요")
 
     def _fetch_finished(self):
         self.is_busy = False
         self._update_mode_banner()
-        self._set_progress(percent=0, text="대기 중")
+
 
     # ---------- 제목 미리보기 (URL 여러 개 확인용) ----------
     def _start_preview_titles(self):
-        if self.is_busy:
-            return
-        if yt_dlp is None:
-            messagebox.showerror(APP_TITLE, "yt-dlp 모듈이 설치되어 있지 않습니다.")
+        if self.is_busy or self.engine_busy:
             return
 
         urls = self._get_urls()
@@ -843,6 +633,7 @@ class DownloaderApp(tk.Tk):
             return
 
         self.is_busy = True
+        self._refresh_controls()
         self.fetch_btn.config(state="disabled")
         self.preview_btn.config(state="disabled")
         self.download_btn.config(state="disabled")
@@ -873,8 +664,6 @@ class DownloaderApp(tk.Tk):
         total = len(urls)
         ok_count = 0
         ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
         }
@@ -882,7 +671,7 @@ class DownloaderApp(tk.Tk):
             self._set_progress(percent=int((idx - 1) / total * 100), text=f"[{idx}/{total}] 제목 확인 중...")
             self.after(0, lambda i=idx, u=url: self._update_preview_row(i, "확인중", "확인 중...", u))
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(ydl_opts, log=self._log) as ydl:
                     info = ydl.extract_info(url, download=False)
                 title = info.get("title", "(제목 없음)")
                 if title:
@@ -904,7 +693,7 @@ class DownloaderApp(tk.Tk):
                 self._log(f"[{idx}/{total}] ❌ 정보 확인 실패: {url}\n        사유: {exc}")
 
         self._log(f"===== 미리보기 완료: {ok_count}/{total}개 확인됨 =====")
-        self._set_progress(percent=100, text="제목 확인 완료")
+        self._set_progress(percent=100, text=f"제목 확인 {ok_count}개 / 실패 {total - ok_count}개")
         self.after(0, self._preview_finished)
 
     def _preview_finished(self):
@@ -915,7 +704,7 @@ class DownloaderApp(tk.Tk):
         self._update_mode_banner()
 
     def _on_combo_double_click(self, _event):
-        if self.is_busy:
+        if self.is_busy or self.engine_busy:
             return
         selection = self.combo_tree.selection()
         if not selection:
@@ -930,10 +719,7 @@ class DownloaderApp(tk.Tk):
 
     # ---------- 다운로드 ----------
     def _start_download(self):
-        if self.is_busy:
-            return
-        if yt_dlp is None:
-            messagebox.showerror(APP_TITLE, "yt-dlp 모듈이 설치되어 있지 않습니다.")
+        if self.is_busy or self.engine_busy:
             return
 
         urls = self._get_urls()
@@ -941,8 +727,12 @@ class DownloaderApp(tk.Tk):
             messagebox.showwarning(APP_TITLE, "URL을 입력해주세요.")
             return
 
-        combo_selection = self.combo_tree.selection()
-        raw_selection = self.tree.selection()
+        in_details = self.notebook.select() == str(self.detail_page)
+        combo_selection = self.combo_tree.selection() if in_details else ()
+        raw_selection = self.tree.selection() if in_details and self.adv_visible else ()
+        if in_details and (self.fetched_url != urls[0] or not (combo_selection or raw_selection)):
+            messagebox.showinfo(APP_TITLE, "영상 정보를 불러온 뒤 포맷을 선택하세요.\n간편하게 받으려면 다운로드 탭을 사용하세요.")
+            return
 
         use_combo = len(urls) == 1 and bool(combo_selection) and self.fetched_url == urls[0]
         use_raw = (
@@ -964,15 +754,18 @@ class DownloaderApp(tk.Tk):
 
     def _begin_precise_download(self, url, selection, is_combo):
         self.is_busy = True
+        self._refresh_controls()
         self.download_btn.config(state="disabled")
+        self.thumb_only_btn.config(state="disabled")
         self.download_selected_btn.config(state="disabled")
         self.fetch_btn.config(state="disabled")
         self._set_progress(percent=0, text="다운로드 준비 중...")
 
+        self._capture_job_options()
         if is_combo:
             format_ids = self.combo_map.get(selection, selection).split("+")
             thread = threading.Thread(
-                target=self._run_precise_download, args=(url, format_ids), daemon=True
+                target=self._run_precise_download, args=(url, format_ids, False), daemon=True
             )
         else:
             thread = threading.Thread(
@@ -982,12 +775,21 @@ class DownloaderApp(tk.Tk):
 
     def _begin_batch_download(self, urls):
         self.is_busy = True
+        self._refresh_controls()
         self.download_btn.config(state="disabled")
+        self.thumb_only_btn.config(state="disabled")
         self.download_selected_btn.config(state="disabled")
         self.fetch_btn.config(state="disabled")
         self._set_progress(percent=0, text="다운로드 준비 중...")
+        self._capture_job_options()
         thread = threading.Thread(target=self._run_batch_download, args=(urls,), daemon=True)
         thread.start()
+
+    def _capture_job_options(self):
+        self._job_options = {
+            name: getattr(self, name + "_var").get()
+            for name in ("embed_thumb", "save_thumb", "mp3", "playlist", "subtitle", "preset", "codec")
+        }
 
     def _build_format_selector(self, format_ids):
         """선택된 format_id 1~2개로 -f 문자열을 구성한다."""
@@ -999,27 +801,38 @@ class DownloaderApp(tk.Tk):
             has_video = vcodec != "none"
             has_audio = acodec != "none"
             if has_video and not has_audio:
-                return f"{fmt_id}+bestaudio/best", has_video, True
+                return f"{fmt_id}+bestaudio", has_video, True
             return fmt_id, has_video, has_audio
         else:
             # 2개 선택(또는 미리 만든 조합): '+'로 합쳐서 영상+음성 병합
             return "+".join(format_ids), True, True
 
-    def _run_precise_download(self, url: str, format_ids):
+    def _apply_thumbnail_opts(self, ydl_opts):
+        """썸네일 저장/삽입 옵션을 ydl_opts에 반영한다."""
+        embed = self._job_options["embed_thumb"]
+        save = self._job_options["save_thumb"]
+        if not (embed or save):
+            return
+        ydl_opts["writethumbnail"] = True
+        if embed:
+            postprocessors = ydl_opts.setdefault("postprocessors", [])
+            postprocessors.append({"key": "EmbedThumbnail"})
+
+    def _run_precise_download(self, url: str, format_ids, adaptive=False):
         format_selector, has_video, has_audio = self._build_format_selector(format_ids)
-        want_mp3 = self.mp3_var.get()
+        want_mp3 = self._job_options["mp3"]
 
         self._log(f"다운로드 시작 ({format_ids}): {url}")
 
         if want_mp3:
             expected_ext = "mp3"
         elif has_video:
-            expected_ext = "mp4"
+            expected_ext = "mkv"
         else:
             fmt_info = self.current_formats.get(format_ids[0], {}) if format_ids else {}
             expected_ext = fmt_info.get("ext") or "m4a"
 
-        is_playlist = self.playlist_var.get()
+        is_playlist = self._job_options["playlist"]
         if not is_playlist and self.video_title:
             # 같은 이름의 파일이 이미 있으면 '(1)' 식으로 번호를 붙여 겹치지 않게 저장
             outtmpl = self._unique_output_path(self.video_title, expected_ext)
@@ -1029,11 +842,9 @@ class DownloaderApp(tk.Tk):
         ydl_opts = {
             "format": format_selector,
             "outtmpl": outtmpl,
-            "noplaylist": not self.playlist_var.get(),
+            "noplaylist": not self._job_options["playlist"],
             "progress_hooks": [self._progress_hook],
             "ffmpeg_location": self._ffmpeg_location(),
-            "quiet": True,
-            "no_warnings": True,
         }
 
         if want_mp3:
@@ -1041,35 +852,39 @@ class DownloaderApp(tk.Tk):
                 {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
             ]
         elif has_video:
-            ydl_opts["merge_output_format"] = "mp4"
+            ydl_opts["merge_output_format"] = "mkv"
+            ydl_opts["remux_video"] = "mkv"
 
-        if self.subtitle_var.get():
+        if self._job_options["subtitle"]:
             ydl_opts.update(
                 {"writesubtitles": True, "writeautomaticsub": True, "subtitleslangs": ["ko", "en"]}
             )
 
+        self._apply_thumbnail_opts(ydl_opts)
+
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts, log=self._log) as ydl:
                 ydl.download([url])
             self._log("완료! 저장 위치: " + self.download_dir)
             self._set_progress(percent=100, text="완료")
         except Exception as exc:
             self._log("오류 발생: " + str(exc))
             self._log(traceback.format_exc())
-            self._set_progress(percent=0, text="오류 발생")
+            self._set_progress(percent=0, text="다운로드 실패 · 작업 기록에서 원인을 확인하세요")
         finally:
             self.after(0, self._download_finished)
 
     def _run_batch_download(self, urls):
-        preset_label = self.preset_var.get()
-        format_selector = QUALITY_PRESETS[preset_label]
+        preset_label = self._job_options["preset"]
+        format_selector, output_container = codec_selection(preset_label, self._job_options["codec"])
         is_audio_only = preset_label.startswith("오디오만")
-        expected_ext = "mp3" if is_audio_only else "mp4"
-        is_playlist = self.playlist_var.get()
+        expected_ext = output_container
+        is_playlist = self._job_options["playlist"]
 
         total = len(urls)
+        failed = 0
         for idx, url in enumerate(urls, start=1):
-            self._log(f"[{idx}/{total}] 다운로드 시작: {url}")
+            self._log(f"[{idx}/{total}] 다운로드 시작 · {preset_label} · {self._job_options['codec']}: {url}")
             self._set_progress(percent=0, text=f"[{idx}/{total}] 준비 중...")
 
             if not is_playlist:
@@ -1085,11 +900,9 @@ class DownloaderApp(tk.Tk):
             ydl_opts = {
                 "format": format_selector,
                 "outtmpl": outtmpl,
-                "noplaylist": not self.playlist_var.get(),
+                "noplaylist": not self._job_options["playlist"],
                 "progress_hooks": [lambda d, i=idx, t=total: self._progress_hook(d, prefix=f"[{i}/{t}] ")],
                 "ffmpeg_location": self._ffmpeg_location(),
-                "quiet": True,
-                "no_warnings": True,
             }
 
             if is_audio_only:
@@ -1097,22 +910,28 @@ class DownloaderApp(tk.Tk):
                     {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
                 ]
             else:
-                ydl_opts["merge_output_format"] = "mp4"
+                ydl_opts["merge_output_format"] = output_container
+                ydl_opts["remux_video"] = output_container
 
-            if self.subtitle_var.get():
+            if self._job_options["subtitle"]:
                 ydl_opts.update(
                     {"writesubtitles": True, "writeautomaticsub": True, "subtitleslangs": ["ko", "en"]}
                 )
 
+            self._apply_thumbnail_opts(ydl_opts)
+
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(ydl_opts, log=self._log) as ydl:
                     ydl.download([url])
                 self._log(f"[{idx}/{total}] 완료: {url}")
             except Exception as exc:
+                failed += 1
+                if "Requested format is not available" in str(exc):
+                    self._log("선택한 화질·코덱 조합을 제공하지 않는 영상입니다. 다른 코덱을 선택하거나 포맷 직접 선택 탭에서 확인하세요.")
                 self._log(f"[{idx}/{total}] 오류 발생 ({url}): {exc}")
 
         self._log(f"일괄 다운로드 종료. 저장 위치: {self.download_dir}")
-        self._set_progress(percent=100, text="전체 완료")
+        self._set_progress(percent=100 if not failed else 0, text=f"완료 {total - failed}개 / 실패 {failed}개")
         self.after(0, self._download_finished)
 
     def _ffmpeg_location(self):
@@ -1120,15 +939,14 @@ class DownloaderApp(tk.Tk):
         bundled = resource_path(ffmpeg_name)
         if os.path.exists(bundled):
             return bundled
-        return None  # 시스템 PATH에 있는 ffmpeg 사용 시도
+        for path in (shutil.which(ffmpeg_name), "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+            if path and os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        return None
 
     def _sanitize_title(self, title: str) -> str:
-        try:
-            from yt_dlp.utils import sanitize_filename
-            return sanitize_filename(title, restricted=False)
-        except Exception:
-            # 최소한의 안전장치: 파일명에 못 쓰는 문자만 제거
-            return "".join(c for c in title if c not in '\\/:*?"<>|').strip() or "video"
+        # Literal titles must escape '%' before passing through yt-dlp templates.
+        return "".join(c for c in title if c not in '\\/:*?"<>|' and ord(c) >= 32).strip().strip('.') or "video"
 
     def _unique_output_path(self, title: str, ext: str) -> str:
         """저장 위치에 같은 이름의 파일이 이미 있으면 '제목 (1).ext' 식으로 번호를 붙여
@@ -1136,24 +954,22 @@ class DownloaderApp(tk.Tk):
         safe_title = self._sanitize_title(title or "video")
         candidate = os.path.join(self.download_dir, f"{safe_title}.{ext}")
         if not os.path.exists(candidate):
-            return candidate
+            return candidate.replace("%", "%%")
         n = 1
         while True:
             candidate = os.path.join(self.download_dir, f"{safe_title} ({n}).{ext}")
             if not os.path.exists(candidate):
-                return candidate
+                return candidate.replace("%", "%%")
             n += 1
 
     def _peek_title(self, url: str):
         """다운로드 전에 제목만 빠르게 가져온다 (실패하면 None)."""
         try:
             probe_opts = {
-                "quiet": True,
-                "no_warnings": True,
                 "noplaylist": True,
                 "skip_download": True,
             }
-            with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            with yt_dlp.YoutubeDL(probe_opts, log=self._log) as ydl:
                 info = ydl.extract_info(url, download=False)
             return info.get("title")
         except Exception:
@@ -1187,10 +1003,60 @@ class DownloaderApp(tk.Tk):
             self._set_progress(percent=100, text=f"{prefix}변환 중... (ffmpeg 처리 중일 수 있습니다)")
             self._log(f"{prefix}변환 중... (ffmpeg 처리 중일 수 있습니다)")
 
+    def _start_thumbnail_only_download(self):
+        if self.is_busy or self.engine_busy:
+            return
+
+        urls = self._get_urls()
+        if not urls:
+            messagebox.showwarning(APP_TITLE, "URL을 입력해주세요.")
+            return
+
+        self.is_busy = True
+        self._refresh_controls()
+        self.download_btn.config(state="disabled")
+        self.thumb_only_btn.config(state="disabled")
+        self.download_selected_btn.config(state="disabled")
+        self.fetch_btn.config(state="disabled")
+        self._set_progress(percent=0, text="썸네일 다운로드 준비 중...")
+
+        self._capture_job_options()
+        thread = threading.Thread(target=self._run_thumbnail_only_download, args=(urls,), daemon=True)
+        thread.start()
+
+    def _run_thumbnail_only_download(self, urls):
+        total = len(urls)
+        failed = 0
+        for idx, url in enumerate(urls, start=1):
+            self._log(f"[{idx}/{total}] 썸네일 다운로드 시작: {url}")
+            self._set_progress(percent=0, text=f"[{idx}/{total}] 썸네일 받는 중...")
+
+            outtmpl = os.path.join(self.download_dir, "%(title)s.%(ext)s")
+            ydl_opts = {
+                "outtmpl": outtmpl,
+                "skip_download": True,   # 영상/음성은 받지 않고 썸네일만
+                "writethumbnail": True,
+                "noplaylist": not self._job_options["playlist"],
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts, log=self._log) as ydl:
+                    ydl.download([url])
+                self._log(f"[{idx}/{total}] 썸네일 저장 완료: {url}")
+            except Exception as exc:
+                failed += 1
+                self._log(f"[{idx}/{total}] 썸네일 다운로드 오류 ({url}): {exc}")
+                self._log(traceback.format_exc())
+
+        self._log(f"썸네일 다운로드 종료. 저장 위치: {self.download_dir}")
+        self._set_progress(percent=100 if not failed else 0, text=f"썸네일 완료 {total - failed}개 / 실패 {failed}개")
+        self.after(0, self._download_finished)
+
     def _download_finished(self):
         self.is_busy = False
         self.download_btn.config(state="normal")
+        self.thumb_only_btn.config(state="normal")
         self.download_selected_btn.config(state="normal")
+        self.fetch_btn.config(state="normal")
         self._update_mode_banner()
 
 

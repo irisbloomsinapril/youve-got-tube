@@ -1,1 +1,0 @@
-([('YGT', '/Users/iris/Downloads/유튜브 다운로더/dist/YGT', 'EXECUTABLE')],)
